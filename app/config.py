@@ -23,4 +23,4 @@ STVP_CLI_NAME = "STVP_CmdLine.exe"
 STM8FLASH_CLI = "stm8flash"
 DEFAULT_MAP_PATH = ""
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
