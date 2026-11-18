@@ -10,7 +10,7 @@ from app.engine.test_engine import TestEngine
 
 class TestSuiteModeTests(unittest.TestCase):
     def test_safe_suite_contains_only_non_disruptive_scenarios(self):
-        self.assertEqual([case.test_id for case in build_safe_suite()], ["T01", "T02", "T06"])
+        self.assertEqual([case.test_id for case in build_safe_suite()], ["T02", "T06"])
 
     def test_serial_open_failure_skips_all_later_scenarios(self):
         later_called = []
