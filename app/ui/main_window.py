@@ -199,6 +199,7 @@ class MainWindow(QMainWindow):
         self.test_mode_combo = QComboBox()
         self.test_mode_combo.addItem("ارتباط امن (بدون فلش)", "safe")
         self.test_mode_combo.addItem("مجموعه کامل (فلش و تست مداخله‌ای)", "full")
+        self.test_mode_combo.currentIndexChanged.connect(self._on_test_mode_changed)
         self.btn_start = QPushButton("شروع تست‌ها")
         self.btn_start.setMinimumWidth(130)
         self.btn_start.clicked.connect(self.start_tests)
@@ -247,8 +248,9 @@ class MainWindow(QMainWindow):
         hint.setStyleSheet("color: #5D6D7E; padding: 6px; background: #F4F6F7; border-radius: 4px;")
         layout.addWidget(hint)
 
-    def _load_suite_rows(self) -> None:
-        suite = build_default_suite()
+    def _load_suite_rows(self, suite_mode: Optional[str] = None) -> None:
+        mode = suite_mode or self.test_mode_combo.currentData()
+        suite = build_safe_suite() if mode == "safe" else build_default_suite()
         self.table.setRowCount(len(suite))
         for row, case in enumerate(suite):
             self.table.setItem(row, 0, QTableWidgetItem(case.test_id))
@@ -258,6 +260,10 @@ class MainWindow(QMainWindow):
             self.table.setItem(row, 2, status)
             self.table.setItem(row, 3, QTableWidgetItem(case.description))
             self.table.setRowHeight(row, 34)
+
+    def _on_test_mode_changed(self) -> None:
+        if self._thread is None:
+            self._load_suite_rows(self.test_mode_combo.currentData())
 
     def browse_firmware(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -331,7 +337,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
 
-        self._load_suite_rows()
+        self._load_suite_rows(suite_mode)
         self._last_results = []
         self._last_run_info = {
             "started_at": datetime.now().astimezone().isoformat(timespec="seconds"),
