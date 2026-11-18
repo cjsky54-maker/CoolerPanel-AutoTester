@@ -29,10 +29,17 @@ class TestEngine:
         self._abort = False
         self.results = []
         self.on_log("=== Test run started ===")
+        serial_setup_failed = False
 
         for tc in self.suite:
             if self._abort:
                 res = TestResult(tc.test_id, tc.name, TestStatus.SKIP, "aborted")
+                self.results.append(res)
+                self.on_result(res)
+                continue
+            if serial_setup_failed:
+                res = TestResult(tc.test_id, tc.name, TestStatus.SKIP,
+                                 "اتصال سریال برقرار نشد؛ برای جلوگیری از اجرای تست‌های بعدی، مجموعه متوقف شد.")
                 self.results.append(res)
                 self.on_result(res)
                 continue
@@ -54,6 +61,9 @@ class TestEngine:
             self.results.append(res)
             self.on_result(res)
             self.on_log(f"{tc.test_id} => {res.status.value}: {res.message}")
+            if tc.test_id == "T02" and res.status == TestStatus.FAIL:
+                serial_setup_failed = True
+                self.on_log("ارتباط سریال ناموفق بود؛ ادامه تست‌ها عمداً اجرا نخواهد شد.")
 
         self.on_log("=== Test run finished ===")
         self.on_finished(self.results)
