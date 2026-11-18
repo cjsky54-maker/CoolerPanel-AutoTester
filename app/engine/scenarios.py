@@ -337,3 +337,13 @@ def build_default_suite() -> List[TestCase]:
         TestCase("T10", "قطع پاسخ Fake Driver", "مشاهده درخواست‌های پنل هنگام عدم پاسخ درایور", test_silence_driver_timeout),
         TestCase("T11", "خواندن رجیستر DC Bus", "پاسخ‌دهی مقدار 330 به درخواست READ پنل", test_read_dc_bus_value),
     ]
+
+
+def build_safe_suite() -> List[TestCase]:
+    """Non-destructive default suite: tool discovery, COM open, and passive UART observation.
+
+    Flashing, IAR-triggered POWER startup, fault injection, and timeout manipulation
+    remain available only in the explicitly selected full suite.
+    """
+    safe_ids = {"T01", "T02", "T06"}
+    return [case for case in build_default_suite() if case.test_id in safe_ids]
