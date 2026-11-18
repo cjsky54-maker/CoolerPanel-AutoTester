@@ -1,10 +1,10 @@
 {
   "application": "Cooler Panel Auto-Tester",
   "version": "0.4.0",
-  "started_at": "2026-11-18T17:26:56+03:30",
-  "finished_at": "2026-11-18T17:27:24+03:30",
+  "started_at": "2026-11-18T17:28:53+03:30",
+  "finished_at": "2026-11-18T17:29:31+03:30",
   "configuration": {
-    "started_at": "2026-11-18T17:26:56+03:30",
+    "started_at": "2026-11-18T17:28:53+03:30",
     "firmware": "",
     "com_port": "COM8",
     "baud": 9600,
@@ -14,8 +14,8 @@
     "suite_mode": "safe"
   },
   "summary": {
-    "Pass": 1,
-    "Fail": 2,
+    "Pass": 2,
+    "Fail": 1,
     "Skip": 0
   },
   "tests": [
@@ -36,8 +36,8 @@
     {
       "id": "T06",
       "name": "دریافت فریم از پنل",
-      "status": "Fail",
-      "message": "هیچ تبادل معتبر UART دریافت نشد. سیم‌بندی TX/RX، GND، سطح 3.3V، baud=9600 و جدا بودن درایور واقعی را بررسی کن. همچنین ممکن است پنل در Standby/خاموش باشد.",
+      "status": "Pass",
+      "message": "CLEAR_STATUS / reg=FAULT دریافت و پاسخ ارسال شد.",
       "detail": ""
     }
   ]
