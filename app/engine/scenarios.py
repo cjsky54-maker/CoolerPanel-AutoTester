@@ -113,16 +113,19 @@ def test_driver_hears_traffic(ctx: TestContext, tc: TestCase) -> TestResult:
         "پس از اولین فریم، تستر تا پایان توالی و ۱٫۵ ثانیه سکوت UART منتظر می‌ماند."
     )
     first = ctx.driver.wait_for_exchange(
-        lambda x: x.request.crc_ok
-        and x.request.command == DrvCmd.CLEAR_STATUS
-        and x.request.reg == DrvReg.FAULT,
+        lambda x: x.request.crc_ok and (
+            (x.request.command == DrvCmd.CLEAR_STATUS and x.request.reg == DrvReg.FAULT)
+            or (x.request.command == DrvCmd.WRITE
+                and x.request.reg in (DrvReg.SPEED, DrvReg.TORQUE, DrvReg.POWER)
+                and x.request.data != 0)
+        ),
         timeout_s=30.0,
     )
     if first is None:
         return _fail(
             tc,
-            "پس از تغییر Setpoint از ۰٪ به ۵٪ فرمان آغاز راه‌اندازی CLEAR_STATUS دریافت نشد.",
-            "این تست به‌جای فریم‌های دوره‌ای READ_STATUS منتظر فرمان شاخص شروع Power-on می‌ماند. بررسی کن Setpoint بعد از شروع T06 تغییر کرده باشد؛ سپس TX/RX، رابط فیزیکی USART1، سطح منطقی و baud=9600 را بررسی کن.",
+            "پس از تغییر Setpoint از ۰٪ به ۵٪ فرمان آغاز مسیر START دریافت نشد.",
+            "تستر فریم‌های دوره‌ای READ_STATUS را نادیده می‌گیرد و منتظر CLEAR_STATUS (راه‌اندازی سرد) یا نوشتن Setpoint (درایور از قبل مقداردهی‌شده) می‌ماند. بررسی کن Setpoint بعد از شروع T06 تغییر کرده باشد؛ سپس TX/RX، رابط فیزیکی USART1، سطح منطقی و baud=9600 را بررسی کن.",
         )
 
     # Keep Fake Driver active until the whole response-gated queue drains.
@@ -153,29 +156,34 @@ def test_driver_hears_traffic(ctx: TestContext, tc: TestCase) -> TestResult:
     ]
     detail = "توالی مشاهده‌شده: " + (" -> ".join(observed) if observed else "هیچ")
 
-    # On a cold driver initialization, the current Firmware queues these
-    # acknowledged writes in order. Optional LOAD_PARAM/SCRIPT commands may
-    # appear between CLEAR_STATUS and PUMP in other configurations.
-    required = [
-        (DrvCmd.CLEAR_STATUS, DrvReg.FAULT),
-        (DrvCmd.WRITE, DrvReg.PUMP),
-        (DrvCmd.WRITE, DrvReg.CTRL_MODE_SELECT),
-    ]
+    # Cold initialization queues CLEAR_STATUS, PUMP and control mode first.
+    # A previously initialized driver skips those three setup writes and starts
+    # directly with the setpoint. Optional LOAD_PARAM/SCRIPT may appear in cold mode.
+    cold_init = any(
+        x.request.command == DrvCmd.CLEAR_STATUS and x.request.reg == DrvReg.FAULT
+        for x in exchanges
+    )
     cursor = -1
-    for command, reg in required:
-        found = next(
-            (i for i, x in enumerate(exchanges)
-             if i > cursor and x.request.command == command and x.request.reg == reg
-             and x in valid),
-            None,
-        )
-        if found is None:
-            return _fail(
-                tc,
-                f"توالی راه‌اندازی ناقص است؛ فرمان پاسخ‌گرفتهٔ {command.name}/{reg.name} مشاهده نشد.",
-                detail,
+    if cold_init:
+        required = [
+            (DrvCmd.CLEAR_STATUS, DrvReg.FAULT),
+            (DrvCmd.WRITE, DrvReg.PUMP),
+            (DrvCmd.WRITE, DrvReg.CTRL_MODE_SELECT),
+        ]
+        for command, reg in required:
+            found = next(
+                (i for i, x in enumerate(exchanges)
+                 if i > cursor and x.request.command == command and x.request.reg == reg
+                 and x in valid),
+                None,
             )
-        cursor = found
+            if found is None:
+                return _fail(
+                    tc,
+                    f"توالی راه‌اندازی سرد ناقص است؛ فرمان پاسخ‌گرفتهٔ {command.name}/{reg.name} مشاهده نشد.",
+                    detail,
+                )
+            cursor = found
 
     setpoint_index = next(
         (i for i, x in enumerate(exchanges)
@@ -205,8 +213,10 @@ def test_driver_hears_traffic(ctx: TestContext, tc: TestCase) -> TestResult:
 
     return _pass(
         tc,
-        f"توالی راه‌اندازی پنل تأیید شد: {len(exchanges)} درخواست و {len(valid)} پاسخ معتبر؛ "
-        "CLEAR_STATUS، PUMP، CTRL_MODE_SELECT، Setpoint غیرصفر و STOP_START=1 به‌ترتیب مشاهده شدند.",
+        f"مسیر {'راه‌اندازی سرد' if cold_init else 'شروع درایور مقداردهی‌شده'} تأیید شد: "
+        f"{len(exchanges)} درخواست و {len(valid)} پاسخ معتبر؛ "
+        + ("CLEAR_STATUS، PUMP، CTRL_MODE_SELECT، " if cold_init else "")
+        + "Setpoint غیرصفر و STOP_START=1 به‌ترتیب مشاهده شدند.",
         detail,
     )
 
