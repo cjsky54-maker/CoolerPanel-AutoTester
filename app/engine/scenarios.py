@@ -113,14 +113,16 @@ def test_driver_hears_traffic(ctx: TestContext, tc: TestCase) -> TestResult:
         "پس از اولین فریم، تستر تا پایان توالی و ۱٫۵ ثانیه سکوت UART منتظر می‌ماند."
     )
     first = ctx.driver.wait_for_exchange(
-        lambda x: x.request.crc_ok,
+        lambda x: x.request.crc_ok
+        and x.request.command == DrvCmd.CLEAR_STATUS
+        and x.request.reg == DrvReg.FAULT,
         timeout_s=30.0,
     )
     if first is None:
         return _fail(
             tc,
-            "پس از تغییر Setpoint از ۰٪ به ۵٪ هیچ فریم معتبری دریافت نشد.",
-            "بررسی کن Setpoint بعد از شروع T06 تغییر داده شده باشد؛ سپس TX/RX، رابط فیزیکی USART1، GND ایمن، سطح منطقی و baud=9600 را بررسی کن.",
+            "پس از تغییر Setpoint از ۰٪ به ۵٪ فرمان آغاز راه‌اندازی CLEAR_STATUS دریافت نشد.",
+            "این تست به‌جای فریم‌های دوره‌ای READ_STATUS منتظر فرمان شاخص شروع Power-on می‌ماند. بررسی کن Setpoint بعد از شروع T06 تغییر کرده باشد؛ سپس TX/RX، رابط فیزیکی USART1، سطح منطقی و baud=9600 را بررسی کن.",
         )
 
     # Keep Fake Driver active until the whole response-gated queue drains.
