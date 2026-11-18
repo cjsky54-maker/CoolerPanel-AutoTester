@@ -99,20 +99,114 @@ def test_reset(ctx: TestContext, tc: TestCase) -> TestResult:
 
 
 def test_driver_hears_traffic(ctx: TestContext, tc: TestCase) -> TestResult:
-    """Wait for a complete request/response pair from the panel."""
+    """Exercise and validate the panel's acknowledged power-on command sequence.
+
+    Firmware reference: Drv_Set_Power() queues CLEAR_STATUS, PUMP, control mode,
+    selected setpoint register, then STOP_START. The first command is delayed
+    about 500 ms after the relay is enabled. Each next command is sent only
+    after the matching response has been received by the panel.
+    """
     ctx.driver.reset_history()
-    ctx.log("در انتظار فریم معتبر USART1 از پنل (حداکثر ۸ ثانیه)...")
-    exchange = ctx.driver.wait_for_exchange(
-        lambda x: x.request.crc_ok and x.response is not None and response_matches(x.request, x.response),
-        timeout_s=8.0,
+    ctx.log(
+        "برای تست توالی واقعی Firmware: Setpoint را ابتدا روی ۰٪ بگذار. "
+        "اکنون کلید افزایش را بزن و Setpoint را به ۵٪ برسان؛ "
+        "پس از اولین فریم، تستر تا پایان توالی و ۱٫۵ ثانیه سکوت UART منتظر می‌ماند."
     )
-    if exchange is None:
+    first = ctx.driver.wait_for_exchange(
+        lambda x: x.request.crc_ok,
+        timeout_s=30.0,
+    )
+    if first is None:
         return _fail(
             tc,
-            "هیچ تبادل معتبر UART دریافت نشد. سیم‌بندی TX/RX، GND، سطح 3.3V، baud=9600 و جدا بودن درایور واقعی را بررسی کن. همچنین ممکن است پنل در Standby/خاموش باشد.",
+            "پس از تغییر Setpoint از ۰٪ به ۵٪ هیچ فریم معتبری دریافت نشد.",
+            "بررسی کن Setpoint بعد از شروع T06 تغییر داده شده باشد؛ سپس TX/RX، رابط فیزیکی USART1، GND ایمن، سطح منطقی و baud=9600 را بررسی کن.",
         )
-    req = exchange.request
-    return _pass(tc, f"{req.command_name} / reg={req.reg.name if req.reg else 'unknown'} دریافت و پاسخ ارسال شد.")
+
+    # Keep Fake Driver active until the whole response-gated queue drains.
+    # The firmware's normal inter-command delay is 30 ms; 1.5 s of silence
+    # after the last exchange is deliberately longer than the expected queue.
+    started = time.monotonic()
+    last_count = -1
+    last_change = time.monotonic()
+    while time.monotonic() - started < 10.0:
+        count = len(ctx.driver.exchange_snapshot())
+        if count != last_count:
+            last_count = count
+            last_change = time.monotonic()
+        elif time.monotonic() - last_change >= 1.5:
+            break
+        time.sleep(0.05)
+
+    exchanges = ctx.driver.exchange_snapshot()
+    valid = [
+        x for x in exchanges
+        if x.request.crc_ok and x.response is not None
+        and x.response.crc_ok and response_matches(x.request, x.response)
+    ]
+    observed = [
+        f"{x.request.command_name}:{x.request.reg.name if x.request.reg else 'UNKNOWN'}"
+        f"=0x{x.request.data:04X}"
+        for x in exchanges
+    ]
+    detail = "توالی مشاهده‌شده: " + (" -> ".join(observed) if observed else "هیچ")
+
+    # On a cold driver initialization, the current Firmware queues these
+    # acknowledged writes in order. Optional LOAD_PARAM/SCRIPT commands may
+    # appear between CLEAR_STATUS and PUMP in other configurations.
+    required = [
+        (DrvCmd.CLEAR_STATUS, DrvReg.FAULT),
+        (DrvCmd.WRITE, DrvReg.PUMP),
+        (DrvCmd.WRITE, DrvReg.CTRL_MODE_SELECT),
+    ]
+    cursor = -1
+    for command, reg in required:
+        found = next(
+            (i for i, x in enumerate(exchanges)
+             if i > cursor and x.request.command == command and x.request.reg == reg
+             and x in valid),
+            None,
+        )
+        if found is None:
+            return _fail(
+                tc,
+                f"توالی راه‌اندازی ناقص است؛ فرمان پاسخ‌گرفتهٔ {command.name}/{reg.name} مشاهده نشد.",
+                detail,
+            )
+        cursor = found
+
+    setpoint_index = next(
+        (i for i, x in enumerate(exchanges)
+         if i > cursor and x.request.command == DrvCmd.WRITE
+         and x.request.reg in (DrvReg.SPEED, DrvReg.TORQUE, DrvReg.POWER)
+         and x.request.data != 0 and x in valid),
+        None,
+    )
+    if setpoint_index is None:
+        return _fail(tc, "نوشتن Setpoint غیرصفر با پاسخ معتبر مشاهده نشد.", detail)
+
+    start_index = next(
+        (i for i, x in enumerate(exchanges)
+         if i > setpoint_index and x.request.command == DrvCmd.WRITE
+         and x.request.reg == DrvReg.STOP_START and x.request.data == 1 and x in valid),
+        None,
+    )
+    if start_index is None:
+        return _fail(tc, "پس از نوشتن Setpoint، پاسخ معتبر به STOP_START=1 مشاهده نشد.", detail)
+
+    if len(valid) != len(exchanges):
+        return _fail(
+            tc,
+            f"توالی شامل {len(exchanges)} درخواست است اما فقط {len(valid)} پاسخ معتبر و متناظر دارد.",
+            detail,
+        )
+
+    return _pass(
+        tc,
+        f"توالی راه‌اندازی پنل تأیید شد: {len(exchanges)} درخواست و {len(valid)} پاسخ معتبر؛ "
+        "CLEAR_STATUS، PUMP، CTRL_MODE_SELECT، Setpoint غیرصفر و STOP_START=1 به‌ترتیب مشاهده شدند.",
+        detail,
+    )
 
 
 def test_read_status_exchange(ctx: TestContext, tc: TestCase) -> TestResult:
@@ -340,10 +434,10 @@ def build_default_suite() -> List[TestCase]:
 
 
 def build_safe_suite() -> List[TestCase]:
-    """Non-destructive default suite: tool discovery, COM open, and passive UART observation.
+    """Non-destructive default suite: COM open and acknowledged UART sequence observation.
 
-    Flashing, IAR-triggered POWER startup, fault injection, and timeout manipulation
+    Programmer discovery is intentionally omitted because it is not required for UART-only testing. Flashing, IAR-triggered POWER startup, fault injection, and timeout manipulation
     remain available only in the explicitly selected full suite.
     """
-    safe_ids = {"T01", "T02", "T06"}
+    safe_ids = {"T02", "T06"}
     return [case for case in build_default_suite() if case.test_id in safe_ids]
