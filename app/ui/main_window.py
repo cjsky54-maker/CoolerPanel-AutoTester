@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
 
 from app.config import APP_VERSION, DEFAULT_BAUD, DEFAULT_MCU
 from app.driver.fake_driver import FakeDriver
-from app.engine.scenarios import TestContext, TestResult, TestStatus, build_default_suite
+from app.engine.scenarios import TestContext, TestResult, TestStatus, build_default_suite, build_safe_suite
 from app.engine.test_engine import TestEngine
 from app.stlink.flash import STLinkController
 
@@ -67,6 +67,7 @@ class Worker(QObject):
         mcu: str,
         stvp_cli_path: str,
         backend: str,
+        suite_mode: str,
     ) -> None:
         super().__init__()
         self.firmware_path = firmware_path
@@ -75,6 +76,7 @@ class Worker(QObject):
         self.mcu = mcu
         self.stvp_cli_path = stvp_cli_path
         self.backend = backend
+        self.suite_mode = suite_mode
         self._engine: Optional[TestEngine] = None
 
     @Slot()
@@ -91,17 +93,14 @@ class Worker(QObject):
                 backend=self.backend,
             )
             driver = FakeDriver(self.port, baud=self.baud, on_log=emit_log)
-            try:
-                driver.open()
-            except Exception as exc:
-                emit_log(f"باز کردن پورت سریال ناموفق بود: {exc}")
-
             engine = TestEngine(
                 on_result=lambda item: self.result.emit(item),
                 on_log=emit_log,
                 on_finished=lambda items: self.finished.emit(items),
             )
             self._engine = engine
+            engine.suite = build_safe_suite() if self.suite_mode == "safe" else build_default_suite()
+            emit_log("حالت اجرا: " + ("ارتباط امن؛ بدون فلش و تست مداخله‌ای" if self.suite_mode == "safe" else "مجموعه کامل؛ شامل فلش و تست‌های مداخله‌ای"))
             context = TestContext(
                 driver=driver,
                 stlink=stlink,
@@ -197,6 +196,9 @@ class MainWindow(QMainWindow):
 
         # Actions
         action_row = QHBoxLayout()
+        self.test_mode_combo = QComboBox()
+        self.test_mode_combo.addItem("ارتباط امن (بدون فلش)", "safe")
+        self.test_mode_combo.addItem("مجموعه کامل (فلش و تست مداخله‌ای)", "full")
         self.btn_start = QPushButton("شروع تست‌ها")
         self.btn_start.setMinimumWidth(130)
         self.btn_start.clicked.connect(self.start_tests)
@@ -208,6 +210,8 @@ class MainWindow(QMainWindow):
         self.btn_export.clicked.connect(self.export_report)
         self.summary_label = QLabel("قبول: ۰ | مردود: ۰ | ردشده: ۰")
         self.summary_label.setStyleSheet("font-weight: bold; padding: 5px 10px;")
+        action_row.addWidget(QLabel("حالت اجرا:"))
+        action_row.addWidget(self.test_mode_combo)
         action_row.addWidget(self.btn_start)
         action_row.addWidget(self.btn_stop)
         action_row.addWidget(self.btn_export)
@@ -237,7 +241,7 @@ class MainWindow(QMainWindow):
 
         hint = QLabel(
             "Firmware این برد از USART1 روی PC2/PC3 با 9600 و 8N1 استفاده می‌کند. USART2 با 115200 مربوط به ESP است. "
-            "Power poke و Reset مستقل هنوز در این نسخه Skip هستند. برای اتصال واقعی، نوع رابط خروجی برد و مدار جهت PE6 باید با شماتیک تأیید شود."
+            "حالت پیش‌فرض فقط ابزار، بازشدن COM و مشاهده تبادل UART را بررسی می‌کند؛ فلش و تست‌های مداخله‌ای فقط در حالت مجموعه کامل و پس از تأیید اجرا می‌شوند. نوع رابط خروجی برد و مدار جهت PE6 باید پیش از اتصال با شماتیک تأیید شود."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #5D6D7E; padding: 6px; background: #F4F6F7; border-radius: 4px;")
@@ -313,6 +317,20 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "مدل میکرو", "مدل MCU را وارد کن؛ مقدار پیش‌فرض STM8L052R8 است.")
             return
 
+        suite_mode = self.test_mode_combo.currentData()
+        if suite_mode == "full":
+            answer = QMessageBox.warning(
+                self,
+                "تأیید اجرای مجموعه کامل",
+                "این حالت ممکن است Firmware انتخاب‌شده را روی STM8 فلش کند و تست‌های مداخله‌ای را اجرا کند. "
+                "T05 با تزریق دستی POWER در IAR می‌تواند به فرمان راه‌اندازی موتور منجر شود؛ "
+                "T08 نیز Fault آزمایشی تزریق می‌کند. فقط با فیکسچر ایمن و آمادگی کامل ادامه بده.\n\nادامه می‌دهی؟",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+
         self._load_suite_rows()
         self._last_results = []
         self._last_run_info = {
@@ -323,6 +341,7 @@ class MainWindow(QMainWindow):
             "mcu": mcu,
             "stvp_cli": self.stvp_edit.text().strip(),
             "backend": self.backend_combo.currentData(),
+            "suite_mode": suite_mode,
         }
         self.summary_label.setText("تست‌ها در حال اجرا هستند...")
         self.btn_start.setEnabled(False)
@@ -338,6 +357,7 @@ class MainWindow(QMainWindow):
             mcu,
             self.stvp_edit.text().strip(),
             self.backend_combo.currentData(),
+            suite_mode,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
