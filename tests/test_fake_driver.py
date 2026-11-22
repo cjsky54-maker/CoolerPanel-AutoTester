@@ -68,6 +68,39 @@ class FakeDriverSemanticsTests(unittest.TestCase):
         self.assertIsNotNone(exchanges[0].response)
         self.assertEqual(len(dummy.writes), 1)
 
+    def test_rx_loop_reads_one_complete_frame_without_waiting_for_64_bytes(self):
+        class DummySerial:
+            is_open = True
+
+            def __init__(self, driver, frame):
+                self.driver = driver
+                self.frame = frame
+                self.read_sizes = []
+                self.writes = []
+
+            def read(self, size):
+                self.read_sizes.append(size)
+                self.driver._stop.set()
+                return self.frame
+
+            def write(self, data):
+                self.writes.append(bytes(data))
+                return len(data)
+
+        app_id, reg_index = reg_ids(DrvReg.FAULT)
+        request = build_packet(DrvCmd.CLEAR_STATUS, app_id, reg_index)
+        dummy = DummySerial(self.driver, request)
+        self.driver._ser = dummy
+        self.driver._stop.clear()
+        self.driver._rx_loop()
+
+        self.assertEqual(dummy.read_sizes, [8])
+        self.assertEqual(len(dummy.writes), 1)
+        exchange = self.driver.exchange_snapshot()[0]
+        self.assertIsNotNone(exchange.response)
+        self.assertIsNotNone(exchange.response_latency_ms)
+        self.assertGreaterEqual(exchange.response_latency_ms, 0.0)
+
     def test_read_dc_bus_responds_with_seeded_value(self):
         self.driver.set_reg(DrvReg.DC_BUS_VOLTAGE, 330)
         app_id, reg_index = reg_ids(DrvReg.DC_BUS_VOLTAGE)
