@@ -294,7 +294,8 @@ class FakeDriver:
                 if not data:
                     continue
                 self._rx_buf.extend(data)
-                self._drain_rx_buffer()
+                read_completed_ns = time.perf_counter_ns()
+                self._drain_rx_buffer(read_completed_ns)
             except SerialException as e:
                 self._log(f"serial error: {e}")
                 break
@@ -302,7 +303,7 @@ class FakeDriver:
                 self._log(f"rx loop error: {e}")
                 time.sleep(0.05)
 
-    def _drain_rx_buffer(self) -> None:
+    def _drain_rx_buffer(self, read_completed_ns: Optional[int] = None) -> None:
         """Recover 8-byte frame alignment after opening the port mid-frame or receiving noise."""
         valid_commands = {int(DrvCmd.READ_STATUS), int(DrvCmd.CLEAR_STATUS), int(DrvCmd.READ),
                           int(DrvCmd.WRITE), int(DrvCmd.LOAD_PARAM)}
@@ -310,7 +311,9 @@ class FakeDriver:
             candidate = bytes(self._rx_buf[:PACKET_LEN])
             if candidate[0] == 0x01 and candidate[1] in valid_commands and verify_packet(candidate):
                 del self._rx_buf[:PACKET_LEN]
-                frame_ready_ns = time.perf_counter_ns()
+                # Timestamp immediately after pyserial returned the bytes that
+                # completed this frame, before CRC parsing or response building.
+                frame_ready_ns = read_completed_ns or time.perf_counter_ns()
                 self._handle_packet(candidate, frame_ready_ns)
                 continue
 
