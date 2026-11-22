@@ -48,6 +48,9 @@ class PacketExchange:
     request: ParsedPacket
     response: Optional[ParsedPacket]
     timestamp: float
+    # Host-side time from completed frame recognition to serial.write() entry.
+    # This does not measure the electrical start bit on the one-wire bus.
+    response_latency_ms: Optional[float] = None
 
 
 @dataclass
@@ -283,7 +286,11 @@ class FakeDriver:
         assert self._ser is not None
         while not self._stop.is_set():
             try:
-                data = self._ser.read(64)
+                # Read only enough bytes to complete the next 8-byte frame.
+                # Reading 64 bytes here made the driver wait for bytes that never
+                # belong to a single protocol frame, delaying the response.
+                needed = max(1, PACKET_LEN - len(self._rx_buf))
+                data = self._ser.read(needed)
                 if not data:
                     continue
                 self._rx_buf.extend(data)
@@ -303,7 +310,8 @@ class FakeDriver:
             candidate = bytes(self._rx_buf[:PACKET_LEN])
             if candidate[0] == 0x01 and candidate[1] in valid_commands and verify_packet(candidate):
                 del self._rx_buf[:PACKET_LEN]
-                self._handle_packet(candidate)
+                frame_ready_ns = time.perf_counter_ns()
+                self._handle_packet(candidate, frame_ready_ns)
                 continue
 
             # Find the next valid packet boundary instead of permanently consuming
@@ -327,7 +335,7 @@ class FakeDriver:
                     self._log(f"RX resync: skipped {len(skipped)} non-frame byte(s)")
                 break
 
-    def _handle_packet(self, raw: bytes) -> None:
+    def _handle_packet(self, raw: bytes, frame_ready_ns: Optional[int] = None) -> None:
         try:
             parsed = parse_packet(raw)
         except Exception as e:
@@ -354,16 +362,28 @@ class FakeDriver:
         with self._lock:
             should_respond = self.state.respond
             corrupt_crc = self.state.force_bad_crc
+        response_latency_ms: Optional[float] = None
         if rsp and should_respond and self._ser and self._ser.is_open:
             if corrupt_crc:
                 rsp = bytearray(rsp)
                 rsp[7] ^= 0xFF
                 rsp = bytes(rsp)
             try:
+                # Measure host-side processing latency from complete-frame
+                # recognition to immediately before handing the reply to pyserial.
+                tx_start_ns = time.perf_counter_ns()
+                if frame_ready_ns is not None:
+                    response_latency_ms = (tx_start_ns - frame_ready_ns) / 1_000_000.0
                 self._ser.write(rsp)
                 with self._lock:
                     self.state.tx_count += 1
                 self._log(f"TX {rsp.hex(' ')}")
+                if response_latency_ms is not None:
+                    status = "OK" if response_latency_ms <= 5.0 else "OVER_5MS"
+                    self._log(
+                        f"[TIMING] RX-frame-ready -> TX-write-start: "
+                        f"{response_latency_ms:.3f} ms ({status}; target <= 5.000 ms)"
+                    )
             except SerialException as e:
                 self._log(f"TX failed: {e}")
                 rsp = None
@@ -376,7 +396,9 @@ class FakeDriver:
 
         parsed_rsp = parse_packet(rsp) if rsp else None
         with self._history_changed:
-            self._exchanges.append(PacketExchange(parsed, parsed_rsp, time.time()))
+            self._exchanges.append(
+                PacketExchange(parsed, parsed_rsp, time.time(), response_latency_ms)
+            )
             self._history_changed.notify_all()
         self.on_packet(parsed, rsp)
 
